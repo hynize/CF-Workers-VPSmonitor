@@ -606,6 +606,8 @@ start_pre() {
 EOF
 )
   write_file "$INIT_FILE" "755" "$INIT_CONTENT"
+  touch "/var/log/${SERVICE_NAME}.log"
+  chown "$AGENT_USER:$AGENT_USER" "/var/log/${SERVICE_NAME}.log"
   run rc-update add "$SERVICE_NAME" default
   run rc-service "$SERVICE_NAME" restart
   echo "Installed ${SERVICE_NAME}."
