@@ -52,3 +52,10 @@ Thumbs.db
 *.exe
 agent/cf-monitor-agent.exe
 agent/agent.exe
+
+# Upstream reference clones and workspace scratch files
+/cf-vps-monitor/
+/CF-Workers-WebSSH/
+/.sisyphus/
+/pelican_bike.html
+/时空科技605178研究报告.md

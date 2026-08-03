@@ -1,4 +1,4 @@
-name = "cf-vps-monitor"
+name = "cf-workers-vpsmonitor"
 main = "worker/src/index.ts"
 compatibility_date = "2026-06-21"
 compatibility_flags = ["nodejs_compat"]
@@ -27,6 +27,10 @@ class_name = "LiveDataDO"
 name = "RATE_LIMIT"
 class_name = "RateLimitDO"
 
+[[durable_objects.bindings]]
+name = "SSH_SESSIONS"
+class_name = "SSHSessionDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LiveDataDO"]
@@ -35,8 +39,13 @@ new_sqlite_classes = ["LiveDataDO"]
 tag = "v2"
 new_sqlite_classes = ["RateLimitDO"]
 
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["SSHSessionDO"]
+
 [vars]
 SUPABASE_URL = "https://PROJECT_REF.supabase.co"
+CONNECT_TIMEOUT_MS = "10000"
 
 [assets]
 directory = "frontend/dist"

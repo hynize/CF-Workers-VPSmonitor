@@ -5,19 +5,21 @@
   "type": "module",
   "workspaces": [
     "frontend",
+    "webssh",
     "worker"
   ],
   "scripts": {
     "postinstall": "node scripts/install-wrangler-wrapper.mjs",
     "lint": "npm --prefix frontend run lint && npm --prefix worker run lint",
     "build:migrations": "node scripts/generate-migrations.mjs",
-    "build": "npm --prefix frontend run build && npm --prefix worker run build",
+    "build": "npm --prefix frontend run build && npm --prefix webssh run build && npm --prefix worker run build",
     "test": "cd agent && go test ./...",
     "verify": "npm run lint && npm run build && npm test",
     "verify:cloudflare": "node scripts/deploy-cloudflare.mjs --dry-run --outdir worker/.tmp/wrangler-dry-run --metafile worker/.tmp/wrangler-dry-run/metafile.json",
     "deploy": "npm run build && node scripts/deploy-cloudflare.mjs",
     "dev:worker": "npm --prefix worker run dev",
-    "dev:frontend": "npm --prefix frontend run dev"
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:webssh": "npm --prefix webssh run dev"
   },
   "cloudflare": {
     "bindings": {

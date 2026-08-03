@@ -13,6 +13,7 @@ CF VPS Monitor 是一个轻量 VPS 探针面板，使用 Cloudflare Workers 承�
 - **后台管理**：节点增删改、批量隐藏/删除、拖拽排序、记录清理、Agent Token 轮换、安装命令生成、系统设置、审计日志、健康检查、容量估算、备份恢复、账号改名和改密。
 - **通知**：支持 Telegram 、 SMTP Email 和 Webhook，可配置离线、到期、负载以及网站监控相关通知。
 - **主题**：内置 `monitor` 和 `next` 主题，支持主题包、自定义 CSS、图片和字体资源。
+- **Web SSH 终端**：浏览器内直连节点 22 端口（SSH/SFTP/进程实时监控），复用后台管理员会话与 CSRF 校验，登录后台后即可使用，无需额外凭证。
 - **管理员恢复**：首次登录时创建管理员；忘记账号或密码时，可在登录页用当前部署的 Supabase Secret key 重置唯一管理员。
 - **省配额策略**：有实时观看者时 Agent 约 3 秒采集并上报；无人查看时约 120 秒采样并批量上报，足可监控50台服务器。
 
@@ -27,6 +28,7 @@ CF VPS Monitor 是一个轻量 VPS 探针面板，使用 Cloudflare Workers 承�
 | 目录 | 说明 |
 | --- | --- |
 | `frontend/` | React + Vite + Radix UI + Tailwind，构建产物由 Workers Static Assets 托管 |
+| `webssh/` | WebSSH 终端子应用（xterm + Vite），构建到 `frontend/dist/ssh/`，挂载于 `/ssh/` |
 | `worker/` | Hono Worker、Durable Objects、Cron Triggers、Supabase HTTP RPC 数据层 |
 | `agent/` | Go Agent，支持 WebSocket/HTTP 上报和 Unix/Windows 安装脚本 |
 | `supabase/migrations/` | Supabase 表、索引、RLS、RPC、授权和默认数据 |
@@ -103,6 +105,7 @@ npm run deploy
 5. 需要 Ping 监控时，在“Ping”创建任务。
 6. 需要网站监控时，在“网站”创建 HTTP/HTTPS 或 TCP 检测目标。
 7. 需要告警时，在“通知”配置 Telegram、SMTP Email 或 webhook推送。
+8. 需要登录服务器时，在后台“SSH 终端”菜单或节点卡片“SSH 连接”按钮打开终端（浏览器直接连接节点 22 端口，也可用节点 SSH 密钥登录；SFTP 与进程监控在同一会话内）。
 
 
 同一台服务器可以安装多个 Agent 实例。每个安装命令会带独立 `instance-id`，默认生成独立服务名和安装目录。

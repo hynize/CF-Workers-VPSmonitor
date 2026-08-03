@@ -21,7 +21,7 @@ import {
 } from '@radix-ui/themes';
 import {
   Plus, Pencil, Trash2, Copy, Search,
-  GripVertical, RefreshCw, Download, EyeOff, Server, Wifi, Layers, KeyRound
+  GripVertical, RefreshCw, Download, EyeOff, Server, Wifi, Layers, KeyRound, TerminalSquare
 } from 'lucide-react';
 import { toast } from 'sonner';
 import Loading from '../../components/Loading';
@@ -197,11 +197,13 @@ function CopyableIp({ value, muted }: { value: string; muted?: boolean }) {
 function RowActionButton({
   label,
   color,
+  disabled,
   onClick,
   children,
 }: {
   label: string;
   color?: 'red';
+  disabled?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -213,12 +215,20 @@ function RowActionButton({
         size="2"
         variant="soft"
         color={color}
+        disabled={disabled}
         onClick={onClick}
       >
         {children}
       </IconButton>
     </Tooltip>
   );
+}
+
+function buildSshUrl(node: AdminClient): string | null {
+  const host = node.ipv4 || node.ipv6;
+  if (!host) return null;
+  const params = new URLSearchParams({ host, port: '22', username: 'root' });
+  return `/ssh/?${params.toString()}`;
 }
 
 function normalizeAgentVersion(version?: string) {
@@ -337,6 +347,7 @@ function SortableNodeCard({ node, selected, onSelect, liveData, onDetail, onEdit
           <Flex className="admin-row-actions">
             <RowActionButton label="编辑" onClick={() => onEdit(node)}><Pencil size={13} /></RowActionButton>
             <RowActionButton label="安装命令" onClick={() => onCmd(node)}><Download size={13} /></RowActionButton>
+            <RowActionButton label="SSH 连接" disabled={!buildSshUrl(node)} onClick={() => { const url = buildSshUrl(node); if (url) window.open(url, '_blank', 'noopener,noreferrer'); }}><TerminalSquare size={13} /></RowActionButton>
             <RowActionButton label="重置 Token" onClick={() => onRotateToken(node)}><KeyRound size={13} /></RowActionButton>
             <RowActionButton label="删除" color="red" onClick={() => onDelete(node)}><Trash2 size={13} /></RowActionButton>
           </Flex>

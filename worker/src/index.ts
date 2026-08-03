@@ -15,6 +15,7 @@ import { adminThemeRoutes, publicThemeRoutes } from './routes/theme';
 import { clientRoutes } from './routes/client';
 import { wsRoutes } from './routes/websocket';
 import { setupRoutes } from './routes/setup';
+import sshRoutes, { SSHSessionDO } from './routes/ssh';
 import * as db from './db/queries';
 import { DatabaseConfigurationError, getDatabase, withDatabase } from './db/provider';
 import { validateAdminSession } from './auth/admin-session';
@@ -393,6 +394,9 @@ app.use('/api/admin/*', async (c, next): Promise<Response | undefined> => {
 
 app.route('/api/admin/themes', adminThemeRoutes);
 app.route('/api/admin', adminRoutes);
+
+// WebSSH 终端路由（挂载在 /api/admin/ssh，受管理员会话中间件保护）
+app.route('/api/admin/ssh', sshRoutes);
 
 // 管理员手动触发维护任务，用于本地开发和部署后自检。
 app.post('/api/admin/cron/run', async (c) => {
@@ -862,3 +866,4 @@ export default {
 // 导出 Durable Object
 export { LiveDataDO, normalizeViewerTtlMs } from './do/live-data';
 export { RateLimitDO } from './do/rate-limit';
+export { SSHSessionDO }; // WebSSH 会话（来自 CF-Workers-WebSSH）
