@@ -1,4 +1,4 @@
-# Dependencies
+# Dependencies 
 node_modules/
 frontend/node_modules/
 worker/node_modules/
@@ -47,6 +47,7 @@ pnpm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+.claude/
 
 # Generated binaries
 *.exe
@@ -59,3 +60,6 @@ agent/agent.exe
 /.sisyphus/
 /pelican_bike.html
 /时空科技605178研究报告.md
+
+# 文档目录仅本地保留，不提交、不推送
+docs/

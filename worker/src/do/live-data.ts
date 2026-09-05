@@ -1058,12 +1058,12 @@ export class LiveDataDO {
     }
   }
 
-  private broadcastMetadataChanged(detail: JsonObject = {}) {
+  private broadcastMetadataChanged(detail: JsonObject = {}, audience: 'all' | 'public' | 'admin' = 'all') {
     this.broadcastToViewers({
       type: 'metadata_changed',
       ...detail,
       timestamp: Date.now(),
-    });
+    }, audience);
   }
 
   private countViewers(viewerIp?: string): { total: number; sameIp: number } {
@@ -1684,7 +1684,10 @@ export class LiveDataDO {
     if (request.method === 'POST' && url.pathname === '/metadata-refresh') {
       const parsed = await parseJsonRequestWithLimit(request, HTTP_CLIENT_META_MAX_BODY_BYTES);
       if ('response' in parsed) return parsed.response;
-      this.broadcastMetadataChanged(parsed.body);
+      // audience 只用于投递范围，不进广播载荷
+      const { audience, ...detail } = parsed.body as JsonObject & { audience?: unknown };
+      const target = audience === 'public' || audience === 'admin' ? audience : 'all';
+      this.broadcastMetadataChanged(detail, target);
       return Response.json({ success: true });
     }
 
@@ -1721,13 +1724,21 @@ export class LiveDataDO {
         }
       }
 
+      // viewer 窗口由 DO 自己的设置决定（已缓存，无需额外查库）。
+      // 显式传参仍然优先，便于覆盖与向后兼容；缺省时才回落到设置项，
+      // 从而消除"对外宣称 X 秒、实际执行写死的 120 秒"这一不一致。
+      const viewerTtlParam = url.searchParams.get('viewer_ttl_ms');
+      const viewerTtlMs = viewerTtlParam !== null
+        ? normalizeViewerTtlMs(viewerTtlParam)
+        : normalizeViewerTtlMs(this.policySettings.viewerTtlSec * 1000);
+
       const attachment: SessionAttachment = {
         role,
         clientId,
         clientName,
         hidden,
         ...(role === 'viewer' && viewerIp ? { viewerIp } : {}),
-        ...(role === 'viewer' ? { viewerExpiresAt: now + normalizeViewerTtlMs(url.searchParams.get('viewer_ttl_ms')) } : {}),
+        ...(role === 'viewer' ? { viewerExpiresAt: now + viewerTtlMs } : {}),
         ...(role === 'viewer' && (url.searchParams.get('include_hidden') === '1' || url.searchParams.get('include_hidden') === 'true') ? { includeHidden: true } : {}),
         ...(role === 'agent' && sourceIp && isPublicIpAddress(sourceIp) ? { sourceIp } : {}),
         ...(role === 'agent' && region && this.isUsefulRegion(region) ? { region } : {}),
