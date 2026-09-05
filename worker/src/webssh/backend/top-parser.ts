@@ -168,9 +168,13 @@ function parseLabelledUsage(line: string): ResourceUsage | null {
   const used = amount('used');
   const free = amount('free');
   const resolvedTotal = total ?? (used !== null && free !== null ? used + free : null);
-  if (resolvedTotal === null || used === null || resolvedTotal < 0) return null;
+  if (resolvedTotal === null || resolvedTotal < 0) return null;
+  // FreeBSD prints "Swap: 4096M Total, 4096M Free" (no Used) whenever swap is
+  // untouched — derive used from total - free instead of bailing out.
+  const resolvedUsed = used ?? (free !== null ? resolvedTotal - free : null);
+  if (resolvedUsed === null) return null;
   const totalBytes = Math.round(resolvedTotal);
-  const usedBytes = Math.min(totalBytes, Math.round(used));
+  const usedBytes = Math.min(totalBytes, Math.max(0, Math.round(resolvedUsed)));
   return {
     usedBytes,
     totalBytes,

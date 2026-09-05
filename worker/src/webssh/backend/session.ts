@@ -82,11 +82,16 @@ interface PendingProcessKillChannel {
 const LOCAL_WINDOW_THRESHOLD = 512 * 1024;
 const MAX_VERSION_BYTES = 8192;
 const MAX_QUEUED_INPUT = 1024 * 1024;
+const MAX_CLIENT_BINARY_INPUT_BYTES = 64 * 1024;
+const MAX_CLIENT_TEXT_INPUT_CHARS = 256 * 1024;
 const MAX_QUEUED_SFTP_UPLOAD = 1024 * 1024;
 const SFTP_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 const PROCESS_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 const PROCESS_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const PROCESS_KILL_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
+// Bound concurrent `kill` exec channels: each pending entry holds decoders, buffers and a
+// timer, and a misbehaving client must not be able to open unbounded SSH channels.
+const MAX_PENDING_PROCESS_KILLS = 8;
 // Bound the per-kill stdout/stderr payload returned to the browser. `kill` usually produces no
 // output on success, but a hostile or buggy server could dump arbitrary data through the exec
 // channel; cap the bytes we keep per stream so one bad request cannot exhaust worker memory.
@@ -198,18 +203,24 @@ export class SSHSession {
   async handleClientMessage(message: string | ArrayBuffer): Promise<void> {
     if (this.phase === 'closed') return;
     if (message instanceof ArrayBuffer) {
-      if (message.byteLength > 64 * 1024) throw new Error('Binary terminal input exceeds 64 KiB');
+      // Oversized binary input (e.g. a huge paste) is truncated with a notice
+      // instead of tearing down the whole session.
+      if (message.byteLength > MAX_CLIENT_BINARY_INPUT_BYTES) {
+        this.status('input_truncated', 'Oversized terminal input was truncated');
+        this.queueInput(new Uint8Array(message.slice(0, MAX_CLIENT_BINARY_INPUT_BYTES)));
+        return;
+      }
       this.queueInput(new Uint8Array(message));
       return;
     }
 
     let frame: unknown;
-    try { frame = JSON.parse(message); } catch { throw new Error('Invalid WebSocket control JSON'); }
-    if (!frame || typeof frame !== 'object' || Array.isArray(frame)) throw new Error('Invalid WebSocket control message');
+    try { frame = JSON.parse(message); } catch { return; }
+    if (!frame || typeof frame !== 'object' || Array.isArray(frame)) return;
     const value = frame as Record<string, unknown>;
     if (value.type === 'host_key_decision') {
       const pending = this.pendingHostConfirmation;
-      if (!pending || typeof value.accept !== 'boolean' || value.fingerprint !== pending.fingerprint) throw new Error('Invalid host key decision');
+      if (!pending || typeof value.accept !== 'boolean' || value.fingerprint !== pending.fingerprint) return;
       this.pendingHostConfirmation = null;
       pending.resolve(value.accept);
       return;
@@ -226,11 +237,15 @@ export class SSHSession {
       return;
     }
     if (value.type === 'input' || (value.type === undefined && typeof value.data === 'string')) {
-      if (typeof value.data !== 'string' || value.data.length > 256 * 1024) throw new Error('Invalid terminal input');
-      this.queueInput(this.encoder.encode(value.data));
+      if (typeof value.data !== 'string') return;
+      let data = value.data;
+      if (data.length > MAX_CLIENT_TEXT_INPUT_CHARS) {
+        this.status('input_truncated', 'Oversized terminal input was truncated');
+        data = data.slice(0, MAX_CLIENT_TEXT_INPUT_CHARS);
+      }
+      this.queueInput(this.encoder.encode(data));
       return;
     }
-    throw new Error('Unsupported WebSocket message');
   }
 
   close(normal = false): void {
@@ -264,7 +279,7 @@ export class SSHSession {
     this.config.privateKey = undefined;
     try { this.writer?.releaseLock(); } catch { /* already released */ }
     this.writer = null;
-    try { this.socket.close(); } catch { /* already closed */ }
+    void this.socket.close().catch(() => undefined);
     try { this.ws.close(normal ? 1000 : 1011, normal ? 'Session closed' : 'SSH session failed'); } catch { /* already closed */ }
   }
 
@@ -372,6 +387,14 @@ export class SSHSession {
       this.keepalivePending = 0;
       return;
     }
+    // RFC 8308 lets the server send EXT_INFO at any point after its NEWKEYS, including after
+    // USERAUTH_SUCCESS. Only the sig-algs offered before our auth request matter here; later
+    // occurrences must be ignored, not routed into handleChannel() (whose length/ID parsing
+    // would treat the extension count as a channel ID and kill the session).
+    if (type === SSH_MSG_EXT_INFO) {
+      if (this.phase === 'auth' && !this.authRequestSent) this.serverSigAlgs = parseServerSigAlgs(packet.payload);
+      return;
+    }
     if (type === SSH_MSG_KEXINIT && this.phase !== 'kex' && this.phase !== 'host-confirm') throw new Error('Server-initiated SSH rekey is not supported');
     if (this.phase === 'kex' || this.phase === 'host-confirm') await this.handleKex(type, packet.payload);
     else if (this.phase === 'auth') await this.handleAuth(type, packet.payload);
@@ -395,11 +418,12 @@ export class SSHSession {
       this.cipherC2S = negotiate(client.encryptionC2S, server.encryptionC2S, 'client cipher');
       this.cipherS2C = negotiate(client.encryptionS2C, server.encryptionS2C, 'server cipher');
       // RFC 4253 negotiates MAC lists even when the chosen AEAD cipher does
-      // not use the result on the wire.
-      const negotiatedMacC2S = negotiate(client.macC2S, server.macC2S, 'client MAC');
-      const negotiatedMacS2C = negotiate(client.macS2C, server.macS2C, 'server MAC');
-      this.macC2S = getCipherSpec(this.cipherC2S).aead ? 'none' : negotiatedMacC2S;
-      this.macS2C = getCipherSpec(this.cipherS2C).aead ? 'none' : negotiatedMacS2C;
+      // not use the result on the wire. Skip the negotiation entirely for an
+      // AEAD direction (RFC 5647 pairs AEAD ciphers with MAC "none"): a server
+      // whose MAC list has no overlap with ours (e.g. only *-etm@openssh.com)
+      // must still be able to connect when GCM is chosen.
+      this.macC2S = getCipherSpec(this.cipherC2S).aead ? 'none' : negotiate(client.macC2S, server.macC2S, 'client MAC');
+      this.macS2C = getCipherSpec(this.cipherS2C).aead ? 'none' : negotiate(client.macS2C, server.macS2C, 'server MAC');
       if (negotiate(client.compressionC2S, server.compressionC2S, 'client compression') !== 'none'
         || negotiate(client.compressionS2C, server.compressionS2C, 'server compression') !== 'none') {
         throw new Error('SSH compression is not supported');
@@ -569,11 +593,6 @@ export class SSHSession {
   }
 
   private async handleAuth(type: number, payload: Uint8Array): Promise<void> {
-    if (type === SSH_MSG_EXT_INFO) {
-      if (this.authRequestSent) throw new Error('Unexpected SSH extension information after authentication started');
-      this.serverSigAlgs = parseServerSigAlgs(payload);
-      return;
-    }
     if (type === SSH_MSG_SERVICE_ACCEPT) {
       const service = this.readString(payload, 1);
       if (service.next !== payload.length || service.value !== 'ssh-userauth') throw new Error('Invalid SSH user authentication service acceptance');
@@ -857,12 +876,13 @@ export class SSHSession {
     this.processAttachUrl = url;
   }
 
-  attachProcessWebSocket(ws: WebSocket): void {
+  attachProcessWebSocket(ws: WebSocket): boolean {
     if (this.phase === 'closed' || this.processWebSocket) {
       try { ws.close(1008, 'Process monitor is unavailable'); } catch { /* already closed */ }
-      return;
+      return false;
     }
     this.processWebSocket = ws;
+    return true;
   }
 
   detachProcessWebSocket(ws: WebSocket): void {
@@ -876,7 +896,15 @@ export class SSHSession {
       if (kill.timeout) { clearTimeout(kill.timeout); kill.timeout = null; }
       if (kill.openConfirmed) {
         if (kill.channel.isOpen() && !kill.channel.hasSentClose()) void this.sendAuxiliaryChannelClose(kill.channel);
-        this.finalizeProcessKill(kill, 'Process monitor disconnected');
+        // Same rationale as expirePendingProcessKill: finalizeProcessKill() would delete the
+        // channel from this.channels while the server may still be sending exit-status / EOF /
+        // DATA / CHANNEL_CLOSE for it, and handleChannel() would throw "unknown recipient" and
+        // break the whole SSH session. Mark it finalized (result delivery is a no-op anyway —
+        // the monitor socket is gone) and let the server's CHANNEL_CLOSE release the tracking.
+        if (!kill.finalized) {
+          kill.finalized = true;
+          this.pendingProcessKillChannels.delete(kill.channelID);
+        }
       }
       // For channels still opening (openConfirmed=false), do NOT delete the entries
       // from pendingProcessKillChannels / this.channels here. The SSH server may
@@ -918,6 +946,9 @@ export class SSHSession {
   private async openProcessKillChannel(pid: number, requestId: string): Promise<void> {
     if (!this.processWebSocket) throw new Error('Process-monitor WebSocket is not attached');
     if (this.phase !== 'ready') throw new Error('SSH connection is not ready');
+    if (this.pendingProcessKillChannels.size >= MAX_PENDING_PROCESS_KILLS) {
+      throw new Error('Too many pending process-kill requests');
+    }
     const channelID = this.nextChannelID++;
     const channel = new SSHChannel();
     const pending: PendingProcessKillChannel = {
@@ -1166,12 +1197,13 @@ export class SSHSession {
     this.sendProcessJson({ type: 'process_error', message });
   }
 
-  attachSFTPWebSocket(ws: WebSocket): void {
+  attachSFTPWebSocket(ws: WebSocket): boolean {
     if (this.phase === 'closed' || this.sftpWebSocket) {
       try { ws.close(1008, 'SFTP connection is unavailable'); } catch { /* already closed */ }
-      return;
+      return false;
     }
     this.sftpWebSocket = ws;
+    return true;
   }
 
   detachSFTPWebSocket(ws: WebSocket): void {
@@ -1383,9 +1415,16 @@ export class SSHSession {
   }
 
   private queueInput(data: Uint8Array): void {
-    if (data.length === 0) return;
-    if (this.phase !== 'ready') throw new Error('Terminal is not ready');
-    if (this.queuedBytes + data.length > MAX_QUEUED_INPUT) throw new Error('Terminal input queue limit exceeded');
+    if (data.length === 0 || this.phase === 'closed') return;
+    // Input typed before the shell is ready is buffered and drained by
+    // flushInput() once markReady() fires; a full queue truncates the tail
+    // (order preserved) with a notice instead of killing the session.
+    if (this.queuedBytes + data.length > MAX_QUEUED_INPUT) {
+      this.status('input_truncated', 'Terminal input queue is full; input was dropped');
+      const allowed = MAX_QUEUED_INPUT - this.queuedBytes;
+      if (allowed <= 0) return;
+      data = data.subarray(0, allowed);
+    }
     this.inputQueue.push(data);
     this.queuedBytes += data.length;
     void this.flushInput();
@@ -1413,7 +1452,8 @@ export class SSHSession {
   }
 
   private async resize(cols: unknown, rows: unknown): Promise<void> {
-    if (typeof cols !== 'number' || typeof rows !== 'number' || !Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 1000 || rows < 5 || rows > 1000) throw new Error('Invalid terminal size');
+    // An invalid size from a buggy or transitional client is ignored, not fatal.
+    if (typeof cols !== 'number' || typeof rows !== 'number' || !Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 1000 || rows < 5 || rows > 1000) return;
     if (this.phase === 'ready') await this.sendEncrypted(this.shellChannel.buildWindowChange(cols, rows));
   }
 

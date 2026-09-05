@@ -144,7 +144,11 @@ export class SSHSessionDO implements DurableObject {
         await session.handleClientMessage(message);
         return;
       }
-      if (this.pendingConnections.has(ws)) throw new Error('An SSH connection is already being initialized');
+      if (this.pendingConnections.has(ws)) {
+        // A message arriving while the first connect JSON is still being processed
+        // (DNS validation, TCP connect, KEX) must not cancel the in-flight attempt.
+        return;
+      }
       if (typeof message !== 'string' || message.length > 160 * 1024) throw new Error('The first WebSocket message must be a connect JSON object');
       let decoded: unknown;
       try { decoded = JSON.parse(message); } catch { throw new Error('Invalid connect JSON'); }
@@ -256,19 +260,22 @@ export class SSHSessionDO implements DurableObject {
     const server = pair[1];
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ role: 'sftp', phase: 'connected' } satisfies SFTPAttachment);
-    this.sftpSessions.set(server, attach.session);
-    this.sftpOwners.set(server, attach.mainWebSocket);
-    const sockets = this.sftpWebSocketsByMain.get(attach.mainWebSocket) ?? new Set<WebSocket>();
-    sockets.add(server);
-    this.sftpWebSocketsByMain.set(attach.mainWebSocket, sockets);
     try {
-      attach.session.attachSFTPWebSocket(server);
+      if (!attach.session.attachSFTPWebSocket(server)) {
+        this.cleanupSFTPWebSocket(server);
+        return Response.json({ error: 'SFTP connection is unavailable' }, { status: 409 });
+      }
     } catch (error) {
       this.cleanupSFTPWebSocket(server);
       try { server.close(1011, 'Unable to attach SFTP channel'); } catch { /* already closed */ }
       console.error('Unable to attach SFTP WebSocket', error instanceof Error ? error.message : String(error));
       return Response.json({ error: 'Unable to attach SFTP channel' }, { status: 500 });
     }
+    this.sftpSessions.set(server, attach.session);
+    this.sftpOwners.set(server, attach.mainWebSocket);
+    const sockets = this.sftpWebSocketsByMain.get(attach.mainWebSocket) ?? new Set<WebSocket>();
+    sockets.add(server);
+    this.sftpWebSocketsByMain.set(attach.mainWebSocket, sockets);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -294,12 +301,15 @@ export class SSHSessionDO implements DurableObject {
     const server = pair[1];
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ role: 'process', phase: 'connected' } satisfies ProcessAttachment);
+    if (!attach.session.attachProcessWebSocket(server)) {
+      this.cleanupProcessWebSocket(server);
+      return Response.json({ error: 'Process monitor is unavailable' }, { status: 409 });
+    }
     this.processSessions.set(server, attach.session);
     this.processOwners.set(server, attach.mainWebSocket);
     const sockets = this.processWebSocketsByMain.get(attach.mainWebSocket) ?? new Set<WebSocket>();
     sockets.add(server);
     this.processWebSocketsByMain.set(attach.mainWebSocket, sockets);
-    attach.session.attachProcessWebSocket(server);
     return new Response(null, { status: 101, webSocket: client });
   }
 

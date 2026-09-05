@@ -586,7 +586,12 @@ export class SFTPClient {
     const id = reader.readUint32('request ID');
     if (id === 0) throw new SFTPProtocolError('Received an SFTP response with request ID zero');
     const request = this.pending.get(id);
-    if (!request) throw new SFTPProtocolError(`Received an SFTP response with unknown request ID ${id}`);
+    if (!request) {
+      // The request timed out or was cancelled while its response was in flight.
+      // Discard the frame: a late response is routine, and treating it as a
+      // protocol error would close the whole SFTP channel for every slow request.
+      return;
+    }
     this.pending.delete(id);
     clearTimeout(request.timer);
 

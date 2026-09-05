@@ -1803,9 +1803,9 @@ async function connect(): Promise<void> {
     pendingHistory = { generation, target: currentTargetKey, profile: historyProfile };
     const ticketRequest = issueTicket(abortController.signal);
     const { ticket, sessionId } = await ticketRequest;
-    currentSessionId = sessionId;
     if (authorizationAbort === abortController) authorizationAbort = null;
     if (generation !== connectGeneration) return;
+    currentSessionId = sessionId;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = new URL('/api/admin/ssh/connect', location.href);
     url.protocol = protocol;
@@ -1999,17 +1999,28 @@ function applyURLParameters(): boolean {
   }
   if (value('username')) ui.username.value = value('username')!;
   if (value('command')) ui.initialCommand.value = value('command')!;
-  if (value('term')) ui.termType.value = value('term')!;
-  if (value('encoding')) ui.encoding.value = value('encoding')!;
+  const term = value('term');
+  if (term && Array.from(ui.termType.options).some((option) => option.value === term)) ui.termType.value = term;
+  const encoding = value('encoding');
+  if (encoding && Array.from(ui.encoding.options).some((option) => option.value === encoding)) ui.encoding.value = encoding;
   if (value('fingerprint')) ui.fingerprint.value = value('fingerprint')!;
   if (value('title')) document.title = value('title')!;
 
   const legacyPassword = value('password');
   if (legacyPassword) {
+    // The link still works, but scrub the credential from the address bar so it
+    // stops leaking into history entries, clipboard sync and Referer headers.
+    const cleanedSearch = new URLSearchParams(location.search);
+    const cleanedHash = new URLSearchParams(location.hash.replace(/^#/, ''));
+    cleanedSearch.delete('password');
+    cleanedHash.delete('password');
+    const nextSearch = cleanedSearch.toString();
+    const nextHash = cleanedHash.toString();
+    history.replaceState(null, '', `${location.pathname}${nextSearch ? `?${nextSearch}` : ''}${nextHash ? `#${nextHash}` : ''}`);
     try {
       const bytes = Uint8Array.from(atob(legacyPassword), (character) => character.charCodeAt(0));
       ui.password.value = new TextDecoder().decode(bytes);
-      toast(bilingual('已从链接载入密码，使用后请从浏览器历史记录中删除该链接。', 'Password loaded from the link. Remove the link from browser history after use.'), 'error');
+      toast(bilingual('已从链接载入密码，该密码已从地址栏中清除。', 'Password loaded from the link and removed from the address bar.'), 'error');
     } catch {
       toast(bilingual('密码 URL 参数不是有效的 Base64。', 'The password URL parameter is not valid Base64.'), 'error');
     }
@@ -2249,4 +2260,10 @@ void initialize().catch(() => {
   setState('idle');
   setWorkspaceTab(null);
   initializeCompatibilityAPI();
+  // Keep URL-parameter handling (including autoconnect) working on this path too.
+  const shouldAutoConnect = applyURLParameters();
+  requestAnimationFrame(() => {
+    fitTerminal(false);
+    if (shouldAutoConnect) void connect();
+  });
 });

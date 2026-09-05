@@ -123,7 +123,12 @@ export class SFTPHandler {
           }
           if (isTruncated) break;
         }
-        if (entries.length === MAX_DIRECTORY_ENTRIES) isTruncated = true;
+        if (entries.length === MAX_DIRECTORY_ENTRIES) {
+          // A full count alone cannot distinguish "exactly MAX entries" from
+          // "MAX entries and more"; probe one more batch before labeling.
+          const batch = await this.client.readDir(handle);
+          if (batch !== null && batch.some((entry) => entry.filename !== '.' && entry.filename !== '..')) isTruncated = true;
+        }
       } finally {
         await this.client.closeHandle(handle).catch(() => undefined);
       }
